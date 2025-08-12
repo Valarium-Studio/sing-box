@@ -1,4 +1,4 @@
-name: Build libbox AAR (arm64, Go 1.22.x)
+name: Build libbox AAR (arm64, sing-box v1.9.x)
 
 on:
   workflow_dispatch: {}
@@ -9,15 +9,17 @@ jobs:
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      ANDROID_NDK_VERSION: 28.0.13004108
+      ANDROID_NDK_VERSION: 28.0.13004108    # r28b
       ANDROID_PLATFORM: android-34
       ANDROID_BUILD_TOOLS: 35.0.0
-      GOTOOLCHAIN: local   # don't auto-fetch newer toolchains
+      GOTOOLCHAIN: local                    # do not auto-upgrade toolchain
 
     steps:
+      # 1) Checkout sing-box at a Go 1.22-compatible tag (v1.9.x)
       - name: Checkout (with tags & submodules)
         uses: actions/checkout@v4
         with:
+          ref: v1.9.5                      # <-- pin to a 1.9.x tag
           submodules: recursive
           fetch-depth: 0
           fetch-tags: true
@@ -28,13 +30,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # <- ключ: используем Go 1.22.x только для gomobile bind
+      # 2) Go 1.22.x for gomobile bind (avoids os.checkPidfdOnce)
       - name: Set up Go 1.22.6
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.6"
 
-      - name: Android cmdline-tools
+      # 3) Android cmdline-tools (sdkmanager in PATH)
+      - name: Install Android cmdline-tools
         run: |
           set -eux
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
@@ -45,7 +48,8 @@ jobs:
           rm -rf latest/cmdline-tools cmdtools.zip
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-      - name: Install SDK platforms, build-tools, NDK (verify + fallback)
+      # 4) Install platforms, build-tools, and NDK; verify NDK integrity
+      - name: Install SDK + NDK (verify + fallback)
         env:
           NDK_VERSION: 28.0.13004108
           NDK_SHORT: r28b
@@ -60,7 +64,7 @@ jobs:
 
           NDK_DIR="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}"
           if [ ! -f "${NDK_DIR}/meta/platforms.json" ]; then
-            echo "NDK via sdkmanager is incomplete. Downloading direct zip..."
+            echo "NDK incomplete via sdkmanager, downloading direct zip..."
             mkdir -p "$ANDROID_SDK_ROOT/ndk"
             cd "$ANDROID_SDK_ROOT/ndk"
             curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_SHORT}-linux.zip"
@@ -72,7 +76,8 @@ jobs:
           test -f "${NDK_DIR}/meta/platforms.json"
           echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
 
-      - name: Install gomobile & gobind (SagerNet fork) and init
+      # 5) gomobile tools (SagerNet fork) and init
+      - name: Install gomobile & gobind
         run: |
           set -eux
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -80,7 +85,8 @@ jobs:
           go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.7
           gomobile init
 
-      - name: Build libbox.aar (arm64, minSdk 21)
+      # 6) Build AAR: arm64 only, minSdk=21 (required by NDK r28)
+      - name: Build libbox.aar
         run: |
           set -eux
           mkdir -p clients/android/app/libs
