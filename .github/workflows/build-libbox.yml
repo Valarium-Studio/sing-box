@@ -1,0 +1,100 @@
+name: Build libbox AAR (arm64)
+
+on:
+  workflow_dispatch: {}   # manual trigger
+  # optionally:
+  # push:
+  #   branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_NDK_VERSION: 28.0.13004108
+      ANDROID_PLATFORM: android-34
+      ANDROID_BUILD_TOOLS: 35.0.0
+      # lock Go toolchain to avoid auto-download quirks
+      GOTOOLCHAIN: local
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # gomobile works reliably with Go 1.23.x for sing-box
+      - name: Set up Go 1.23.1
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.1"
+
+      - name: Install Android cmdline-tools
+        run: |
+          set -eux
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -sSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p latest
+          unzip -q cmdtools.zip -d latest
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Install SDK platforms, build-tools, NDK
+        run: |
+          set -eux
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "platform-tools" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install gomobile & gobind (SagerNet fork) and init
+        run: |
+          set -eux
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          go install github.com/sagernet/gomobile/cmd/gobind@latest
+          go install github.com/sagernet/gomobile/cmd/gomobile@latest
+          gomobile init
+
+      - name: Build libbox.aar (arm64, minSdk 21)
+        run: |
+          set -eux
+          mkdir -p clients/android/app/libs
+          gomobile bind -v -target=android/arm64 -androidapi 21 \
+            -o ./clients/android/app/libs/libbox.aar \
+            github.com/sagernet/sing-box/experimental/libbox
+          ls -lah clients/android/app/libs
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbox-aar
+          path: clients/android/app/libs/libbox.aar
+          if-no-files-found: error
+
+      # OPTIONAL: also build the Android app and upload APKs
+      - name: Build Android client (optional)
+        run: |
+          set -eux
+          chmod +x clients/android/gradlew
+          # If you only target arm64, ensure abiFilters in Gradle or rely on AAR
+          cd clients/android
+          ./gradlew :app:assembleOtherDebug
+          ls -R app/build/outputs/apk || true
+
+      - name: Upload APKs (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfa-apks
+          path: clients/android/app/build/outputs/**/*.apk
+          if-no-files-found: ignore
